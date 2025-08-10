@@ -7,76 +7,22 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Прокси из файла
-let proxies = [];
-let currentProxyIndex = 0;
-
-// Список 50 популярных User-Agent (пример, можно дополнить)
+// User-Agent список (можно расширить)
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.90 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/114.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:116.0) Gecko/20100101 Firefox/116.0",
-  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:115.0) Gecko/20100101 Firefox/115.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.96 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 11; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (iPad; CPU OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
-  "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.5414.120 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 10; SM-A505FN) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.41 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:102.0) Gecko/20100101 Firefox/102.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.5672.93 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 9; Redmi Note 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 15_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Mobile/15E148 Safari/604.1",
-  "Mozilla/5.0 (Windows NT 6.3; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.5304.107 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.2 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 8.1.0; Nexus 6P Build/OPM6.171019.030.B1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.41 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.2 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 7.0; SM-J730F Build/NRD90M) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.77 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:101.0) Gecko/20100101 Firefox/101.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.5195.136 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:104.0) Gecko/20100101 Firefox/104.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 5.1; SM-G920V Build/LMY47X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/18.18363",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/601.1.56 (KHTML, like Gecko) Version/9.0 Safari/601.1.56",
-  "Mozilla/5.0 (Linux; Android 4.4.2; Nexus 7 Build/KOT49H) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.23 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_5) AppleWebKit/600.8.9 (KHTML, like Gecko) Version/8.0.8 Safari/600.8.9",
-  "Mozilla/5.0 (Linux; Android 9; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/602.3.12 (KHTML, like Gecko) Version/10.0.3 Safari/602.3.12",
-  "Mozilla/5.0 (Linux; Android 11; SM-F916B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.5304.141 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 8.0.0; SM-G950F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.125 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:96.0) Gecko/20100101 Firefox/96.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/605.1.15",
-  "Mozilla/5.0 (Linux; Android 10; SM-N970U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.77 Mobile Safari/537.36",
-  "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
+// Глобальные переменные для прокси и индексов
+let proxies = [];
+let proxyIndex = 0;
 const badUserAgents = new Set();
 
-function getRandomUserAgent() {
-  const available = userAgents.filter(ua => !badUserAgents.has(ua));
-  if (available.length === 0) {
-    badUserAgents.clear();
-    return userAgents[Math.floor(Math.random() * userAgents.length)];
-  }
-  return available[Math.floor(Math.random() * available.length)];
-}
-
-function loadProxies() {
+// Загрузка прокси из файла proxies.txt (один прокси на строку)
+async function loadProxies() {
   const proxiesPath = path.resolve('./proxies.txt');
-  const data = fs.readFileSync(proxiesPath, 'utf-8');
+  const data = await fs.promises.readFile(proxiesPath, 'utf-8');
   proxies = data
     .split('\n')
     .map(line => line.trim())
@@ -86,32 +32,45 @@ function loadProxies() {
   }
 }
 
-// Получаем следующий прокси циклично
+// Получить следующий прокси по кругу
 function getNextProxy() {
-  if (proxies.length === 0) {
-    throw new Error('Прокси не загружены');
-  }
-  const proxy = proxies[currentProxyIndex];
-  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
-  return proxy;
+  if (proxies.length === 0) throw new Error('Прокси не загружены');
+  const proxy = proxies[proxyIndex];
+  proxyIndex = (proxyIndex + 1) % proxies.length;
+  return proxy.startsWith('http://') || proxy.startsWith('https://') ? proxy : 'http://' + proxy;
 }
 
-async function fetchWithRetry(searchUrl) {
+// Получить случайный рабочий user-agent
+function getRandomUserAgent() {
+  const available = userAgents.filter(ua => !badUserAgents.has(ua));
+  if (available.length === 0) {
+    badUserAgents.clear();
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+  }
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+// Основная функция с retry и сменой прокси и user-agent
+async function fetchWithRetry(searchUrl, maxRetries = 10) {
   let browser;
   let lastError = null;
-  // Максимум попыток — длина списка прокси
-  const maxRetries = proxies.length;
+
+  if (proxies.length === 0) {
+    await loadProxies();
+  }
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const proxyRaw = getNextProxy();
+    const proxy = getNextProxy();
     const userAgent = getRandomUserAgent();
-
-    // Формат прокси для puppeteer: если нет протокола — добавляем http://
-    const proxy = proxyRaw.match(/^https?:\/\//) ? proxyRaw : `http://${proxyRaw}`;
 
     try {
       browser = await puppeteer.launch({
-        args: [...chromium.args, `--proxy-server=${proxy}`],
+        args: [
+          ...chromium.args,
+          `--proxy-server=${proxy}`,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+        ],
         executablePath: await chromium.executablePath(),
         headless: chromium.headless,
       });
@@ -119,17 +78,22 @@ async function fetchWithRetry(searchUrl) {
       const page = await browser.newPage();
       await page.setUserAgent(userAgent);
 
-      // Если твои прокси требуют аутентификацию - добавь здесь, например:
-      // await page.authenticate({username: 'user', password: 'pass'});
+      // Отключаем загрузку тяжелых ресурсов
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        const resourceType = request.resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+          request.abort();
+        } else {
+          request.continue();
+        }
+      });
 
-      const response = await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 20000 });
+      const response = await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
 
       if (!response || !response.ok()) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
-
-      // Ждём 1 секунду для загрузки JSON
-      await new Promise(r => setTimeout(r, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
 
@@ -148,13 +112,15 @@ async function fetchWithRetry(searchUrl) {
       badUserAgents.add(userAgent);
 
       if (browser) {
-        await browser.close();
+        try {
+          await browser.close();
+        } catch {}
+
       }
 
-      console.warn(`Попытка ${attempt} не удалась с прокси ${proxyRaw} и user-agent ${userAgent}: ${err.message}`);
+      console.warn(`Попытка ${attempt} не удалась с прокси ${proxy} и user-agent ${userAgent}: ${err.message}`);
 
-      // Сразу переключаемся на следующий прокси без задержек
-      // (если хочешь — можешь добавить небольшую паузу)
+      // Пауза не нужна — переходим сразу к следующему
     }
   }
 
@@ -162,14 +128,6 @@ async function fetchWithRetry(searchUrl) {
 }
 
 app.get('/tineye', async (req, res) => {
-  try {
-    if (proxies.length === 0) {
-      loadProxies();
-    }
-  } catch (err) {
-    return res.status(500).json({ error: err.toString() });
-  }
-
   const { page = 1, url } = req.query;
 
   if (!url) {
