@@ -4,6 +4,7 @@ const fetch = require('node-fetch'); // v2
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const proxiesPath = path.join(__dirname, 'proxies.txt');
+
 let proxies = [];
 try {
   proxies = fs.readFileSync(proxiesPath, 'utf8')
@@ -12,6 +13,38 @@ try {
     .filter(Boolean);
 } catch (e) {
   console.error('Ошибка чтения proxies.txt:', e && e.message);
+}
+
+async function testProxy(proxy) {
+  const [host, port] = proxy.split(':');
+  const agent = new HttpsProxyAgent({
+    host,
+    port,
+    rejectUnauthorized: false,
+  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2000);
+  try {
+    const res = await fetch('https://tineye.com/api/v1/result_json/?page=1&url=https%3A%2F%2Ftest.capital-site.ru%2Fwp-content%2Fuploads%2F2021%2F07%2Fteam-02.jpg', {
+      agent,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return res.ok;
+  } catch {
+    clearTimeout(timeoutId);
+    return false;
+  }
+}
+
+async function filterWorkingProxies(proxiesList) {
+  const checks = proxiesList.map(async (proxy) => {
+    const ok = await testProxy(proxy);
+    console.log(`Прокси ${proxy} рабочий? ${ok}`);
+    return ok ? proxy : null;
+  });
+  const results = await Promise.all(checks);
+  return results.filter(Boolean);
 }
 
 let currentProxyIndex = 0;
@@ -33,7 +66,7 @@ function switchToNextProxy() {
 
 async function fetchWithProxy(url) {
   if (!proxies.length) {
-    throw new Error('No proxies configured (proxies.txt is empty or missing)');
+    throw new Error('No proxies configured (proxies.txt is empty or missing or no working proxies)');
   }
 
   let attempts = 0;
@@ -53,7 +86,7 @@ async function fetchWithProxy(url) {
     const agent = new HttpsProxyAgent({
       host,
       port,
-      rejectUnauthorized: false,  // игнорируем ошибки сертификатов
+      rejectUnauthorized: false,
     });
 
     const controller = new AbortController();
@@ -96,6 +129,18 @@ async function fetchWithProxy(url) {
 
   throw new Error(`Все прокси не сработали. Последняя ошибка: ${lastError}`);
 }
+
+// -- инициализация: проверяем прокси, фильтруем рабочие, затем запускаем сервер / export
+
+(async () => {
+  proxies = await filterWorkingProxies(proxies);
+  if (proxies.length === 0) {
+    console.error('Нет рабочих прокси после проверки!');
+    process.exit(1);
+  } else {
+    console.log(`Рабочих прокси после проверки: ${proxies.length}`);
+  }
+})();
 
 // Vercel / Serverless handler
 module.exports = async (req, res) => {
