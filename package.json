@@ -1,9 +1,11 @@
 {
   "name": "proxy-app",
   "version": "1.0.0",
-  "main": "index.js",
   "dependencies": {
-    "puppeteer-core": "^24.9.1",
-    "chrome-aws-lambda": "^10.1.0"
-  }
+    "puppeteer-core": "19.7.5",
+    "chrome-aws-lambda": "10.1.0"
+  },
+  "overrides": {},
+  "resolutions": {},
+  "packageManager": "npm@9.8.1"
 }
