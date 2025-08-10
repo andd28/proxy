@@ -1,8 +1,7 @@
-// index.js (CommonJS)
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
-const HttpsProxyAgent = require('https-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const proxiesPath = path.join(__dirname, 'proxies.txt');
 let proxies = [];
@@ -47,12 +46,10 @@ async function fetchWithProxy(url) {
     }
 
     const proxy = proxies[currentProxyIndex];
-    console.log(`Пытаемся прокси [${currentProxyIndex}]: ${proxy} (used ${requestCounter}/${requestsPerProxy})`);
+    console.log(`Пытаемся прокси [${currentProxyIndex}]: ${proxy} (использовано ${requestCounter}/${requestsPerProxy})`);
 
-    // https-proxy-agent принимает строку 'http://ip:port'
     const agent = new HttpsProxyAgent(`http://${proxy}`);
 
-    // timeout через AbortController (node-fetch v2 поддерживает signal)
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s
 
@@ -94,11 +91,9 @@ async function fetchWithProxy(url) {
   throw new Error(`Все прокси не сработали. Последняя ошибка: ${lastError}`);
 }
 
-
 // Vercel / Serverless handler
 module.exports = async (req, res) => {
   try {
-    // В serverless на Vercel req.url содержит query
     const base = `https://${req.headers.host || 'example.com'}`;
     const reqUrl = new URL(req.url, base);
     const page = reqUrl.searchParams.get('page') || '1';
@@ -127,9 +122,7 @@ module.exports = async (req, res) => {
   }
 };
 
-
 // -- локальный тестовый сервер (запускается если файл запущен напрямую)
-// позволяет запускать `node index.js` локально и тестировать: http://localhost:3000/tineye?url=...
 if (require.main === module) {
   const express = require('express');
   const app = express();
