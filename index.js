@@ -1,94 +1,100 @@
-// index.js
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
-const fetch = require("node-fetch");
-const { HttpsProxyAgent } = require("https-proxy-agent");
-
-const app = express();
+const fs = require('fs');
+const puppeteer = require('puppeteer');
 
 let proxies = [];
-let currentProxyIndex = 0;
+let proxyIndex = 0;
+let requestCount = 0;
+const REQUESTS_PER_PROXY = 10;
 
 function loadProxies() {
-  const filePath = path.join(__dirname, "proxies.txt");
-  proxies = fs
-    .readFileSync(filePath, "utf8")
-    .split("\n")
-    .map(p => p.trim())
-    .filter(Boolean);
-  if (!proxies.length) {
-    throw new Error("Файл proxies.txt пуст");
-  }
+    proxies = fs.readFileSync('proxies.txt', 'utf-8')
+        .split('\n')
+        .map(p => p.trim())
+        .filter(Boolean);
 }
 
 function getNextProxy() {
-  const raw = proxies[currentProxyIndex];
-  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
-  return raw.startsWith("http") ? raw : `http://${raw}`;
+    if (proxyIndex >= proxies.length) proxyIndex = 0;
+    const proxy = proxies[proxyIndex];
+    proxyIndex++;
+    return proxy;
 }
 
-const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-];
-
-function getRandomUA() {
-  return userAgents[Math.floor(Math.random() * userAgents.length)];
-}
-
-async function fetchTinEye(url, pageNum) {
-  let lastError;
-
-  for (let i = 0; i < proxies.length; i++) {
-    const proxy = getNextProxy();
-    const ua = getRandomUA();
-
-    const agent = new HttpsProxyAgent(proxy);
-    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${pageNum}&url=${encodeURIComponent(url)}&tags=stock`;
-
+async function fetchWithProxy(url, proxy) {
+    let browser;
     try {
-      const res = await fetch(searchUrl, {
-        agent,
-        headers: {
-          "User-Agent": ua,
-          "Accept": "application/json,text/plain,*/*",
-          "Referer": "https://tineye.com/"
-        },
-        timeout: 15000
-      });
+        browser = await puppeteer.launch({
+            headless: 'new',
+            args: [`--proxy-server=${proxy}`, '--no-sandbox', '--disable-setuid-sandbox']
+        });
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+        const page = await browser.newPage();
 
-      return await res.json();
+        // Быстрая проверка, что прокси живой
+        try {
+            await page.goto('https://example.com', { timeout: 8000 });
+        } catch (err) {
+            throw new Error(`Прокси ${proxy} не отвечает`);
+        }
 
-    } catch (err) {
-      lastError = err;
-      console.warn(`Ошибка с прокси ${proxy}: ${err.message}`);
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+        const content = await page.evaluate(() => document.body.innerText);
+
+        return JSON.parse(content);
+    } finally {
+        if (browser) await browser.close();
     }
-  }
-
-  throw lastError;
 }
 
-app.get("/tineye", async (req, res) => {
-  const { url, page = 1 } = req.query;
+async function fetchTinEye(urls) {
+    loadProxies();
+    let results = [];
 
-  if (!url) {
-    return res.status(400).json({ error: 'Нужно передать параметр "url"' });
-  }
+    for (let i = 0; i < urls.length; i++) {
+        if (requestCount % REQUESTS_PER_PROXY === 0 || requestCount === 0) {
+            let proxyWorking = false;
+            let proxy;
+            while (!proxyWorking) {
+                proxy = getNextProxy();
+                try {
+                    console.log(`Пробую прокси: ${proxy}`);
+                    // Тестируем на 1 простой запрос
+                    await fetchWithProxy('https://example.com', proxy);
+                    proxyWorking = true;
+                } catch (err) {
+                    console.log(`Прокси ${proxy} не работает: ${err.message}`);
+                }
+            }
+            currentProxy = proxy;
+        }
 
-  try {
-    if (!proxies.length) loadProxies();
-    const data = await fetchTinEye(url, page);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+        try {
+            console.log(`Запрос ${i + 1} через прокси ${currentProxy}`);
+            const data = await fetchWithProxy(urls[i], currentProxy);
+            results.push({ url: urls[i], data });
+        } catch (err) {
+            console.log(`Ошибка при запросе ${urls[i]}: ${err.message}`);
+        }
 
-// для Vercel — экспортируем app
-module.exports = app;
+        requestCount++;
+    }
+
+    return results;
+}
+
+// Обработчик Vercel
+module.exports = async (req, res) => {
+    const { urls } = req.query;
+    if (!urls) {
+        res.status(400).send({ error: 'Не переданы ссылки' });
+        return;
+    }
+
+    const urlList = Array.isArray(urls) ? urls : urls.split(',');
+    try {
+        const data = await fetchTinEye(urlList);
+        res.status(200).json(data);
+    } catch (err) {
+        res.status(500).send({ error: err.message });
+    }
+};
