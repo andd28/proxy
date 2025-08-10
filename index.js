@@ -1,11 +1,11 @@
 const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
-
-app.use(express.json());
 
 // Список 50 популярных User-Agent (пример, можно дополнить)
 const userAgents = [
@@ -59,9 +59,26 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
-// Возвращает случайный User-Agent из списка
+// Функция для получения случайного User-Agent
 function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
+// Функция для чтения прокси из файла и выбора случайного
+async function getRandomProxy() {
+  const proxiesPath = path.resolve('./proxies.txt');
+  const data = await fs.promises.readFile(proxiesPath, 'utf-8');
+  const proxies = data
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+
+  if (proxies.length === 0) {
+    throw new Error('Список прокси пуст');
+  }
+
+  const randomIndex = Math.floor(Math.random() * proxies.length);
+  return proxies[randomIndex];
 }
 
 async function fetchWithRetry(searchUrl, maxRetries = 3) {
@@ -70,8 +87,10 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      const proxy = await getRandomProxy();
+
       browser = await puppeteer.launch({
-        args: chromium.args,
+        args: [...chromium.args, `--proxy-server=${proxy}`],
         executablePath: await chromium.executablePath(),
         headless: chromium.headless,
       });
@@ -85,8 +104,8 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
 
-      // Ждём 3 секунды для полной загрузки
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Ждем 1 секунду для полной загрузки JSON
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
 
@@ -94,8 +113,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
       try {
         json = JSON.parse(content);
       } catch (e) {
-        // Если не получилось распарсить JSON — кидаем ошибку, чтобы попробовать заново
-        throw new Error('Failed to parse JSON from TinEye');
+        throw new Error('Не удалось распарсить JSON от TinEye');
       }
 
       await browser.close();
@@ -106,12 +124,11 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
       if (browser) {
         await browser.close();
       }
-      // Небольшая пауза перед повторной попыткой (1 секунда)
+      // Пауза 1 секунда перед повтором
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
 
-  // Если все попытки провалились — бросаем последнюю ошибку
   throw lastError;
 }
 
@@ -119,10 +136,10 @@ app.get('/tineye', async (req, res) => {
   const { page = 1, url } = req.query;
 
   if (!url) {
-    return res.status(400).json({ error: 'Missing "url" parameter' });
+    return res.status(400).json({ error: 'Отсутствует параметр "url"' });
   }
 
-  const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(url)}`;
+  const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(url)}&tags=stock`;
 
   try {
     const result = await fetchWithRetry(searchUrl);
