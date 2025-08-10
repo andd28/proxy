@@ -50,7 +50,7 @@ app.get('/tineye', async (req, res) => {
     }
 
     // Ждём дополнительно 3 секунды — чтобы всё загрузилось
-    await pageP.waitForTimeout(3000);
+    await pageP.waitFor(3000);
 
     // Получаем тело страницы как текст
     const content = await pageP.evaluate(() => document.body.innerText);
