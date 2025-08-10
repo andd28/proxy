@@ -1,8 +1,6 @@
 const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -59,50 +57,15 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
-// --- Глобальные переменные для хранения прокси и user-agent ---
-let proxies = [];
-let badProxies = new Set();
-let badUserAgents = new Set();
+// Множество "плохих" user-agent, чтобы их временно не использовать
+const badUserAgents = new Set();
 
 function getRandomUserAgent() {
-  // Фильтруем нерабочие user-agent из текущего списка
   const available = userAgents.filter(ua => !badUserAgents.has(ua));
   if (available.length === 0) {
-    // Если все user-agent "плохие" — сбрасываем к исходному состоянию
+    // Сброс плохих, если все плохие
     badUserAgents.clear();
     return userAgents[Math.floor(Math.random() * userAgents.length)];
-  }
-  return available[Math.floor(Math.random() * available.length)];
-}
-
-function formatProxy(proxy) {
-  if (
-    !proxy.startsWith('http://') &&
-    !proxy.startsWith('https://') &&
-    !proxy.startsWith('socks://') &&
-    !proxy.startsWith('socks4://') &&
-    !proxy.startsWith('socks5://')
-  ) {
-    return 'http://' + proxy;
-  }
-  return proxy;
-}
-
-async function loadProxies() {
-  const proxiesPath = path.resolve('./proxies.txt');
-  const data = await fs.promises.readFile(proxiesPath, 'utf-8');
-  proxies = data
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0);
-}
-
-function getRandomProxy() {
-  // Фильтруем нерабочие прокси
-  const available = proxies.filter(p => !badProxies.has(p));
-  if (available.length === 0) {
-    badProxies.clear();
-    return proxies[Math.floor(Math.random() * proxies.length)];
   }
   return available[Math.floor(Math.random() * available.length)];
 }
@@ -111,19 +74,12 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
   let browser;
   let lastError = null;
 
-  // Загружаем прокси (если не загружены)
-  if (proxies.length === 0) {
-    await loadProxies();
-  }
-
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const proxyRaw = getRandomProxy();
-    const proxy = formatProxy(proxyRaw);
     const userAgent = getRandomUserAgent();
 
     try {
       browser = await puppeteer.launch({
-        args: [...chromium.args, `--proxy-server=${proxy}`],
+        args: chromium.args,
         executablePath: await chromium.executablePath(),
         headless: chromium.headless,
       });
@@ -137,6 +93,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
 
+      // Ждем 1 секунду для полной загрузки JSON
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
@@ -144,7 +101,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
       let json;
       try {
         json = JSON.parse(content);
-      } catch (e) {
+      } catch {
         throw new Error('Не удалось распарсить JSON от TinEye');
       }
 
@@ -154,16 +111,14 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
     } catch (err) {
       lastError = err;
 
-      // Помечаем прокси и user-agent как "плохие" для текущего запуска
-      badProxies.add(proxyRaw);
+      // Помечаем user-agent как плохой для текущего запуска
       badUserAgents.add(userAgent);
 
       if (browser) {
         await browser.close();
       }
 
-      // Логируем
-      console.warn(`Попытка ${attempt} не удалась с прокси ${proxyRaw} и user-agent ${userAgent}: ${err.message}`);
+      console.warn(`Попытка ${attempt} не удалась с user-agent ${userAgent}: ${err.message}`);
 
       // Пауза 1 секунда
       await new Promise(resolve => setTimeout(resolve, 1000));
