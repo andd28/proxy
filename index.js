@@ -48,7 +48,13 @@ async function fetchWithProxy(url) {
     const proxy = proxies[currentProxyIndex];
     console.log(`Пытаемся прокси [${currentProxyIndex}]: ${proxy} (использовано ${requestCounter}/${requestsPerProxy})`);
 
-    const agent = new HttpsProxyAgent(`http://${proxy}`);
+    const [host, port] = proxy.split(':');
+
+    const agent = new HttpsProxyAgent({
+      host,
+      port,
+      rejectUnauthorized: false,  // игнорируем ошибки сертификатов
+    });
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s
