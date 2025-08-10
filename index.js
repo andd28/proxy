@@ -1,12 +1,15 @@
 const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-const BRIGHTDATA_USERNAME = 'bgawesom@gmail.com';
-const BRIGHTDATA_API_KEY = '5c5b53aa79e568b7097c11310970d888ecc19caad1d9b5c5075ea1044890a062';
+// Прокси из файла
+let proxies = [];
+let currentProxyIndex = 0;
 
 // Список 50 популярных User-Agent (пример, можно дополнить)
 const userAgents = [
@@ -71,22 +74,44 @@ function getRandomUserAgent() {
   return available[Math.floor(Math.random() * available.length)];
 }
 
-async function fetchWithRetry(searchUrl, maxRetries = 5) {
+function loadProxies() {
+  const proxiesPath = path.resolve('./proxies.txt');
+  const data = fs.readFileSync(proxiesPath, 'utf-8');
+  proxies = data
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+  if (proxies.length === 0) {
+    throw new Error('Список прокси пуст');
+  }
+}
+
+// Получаем следующий прокси циклично
+function getNextProxy() {
+  if (proxies.length === 0) {
+    throw new Error('Прокси не загружены');
+  }
+  const proxy = proxies[currentProxyIndex];
+  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
+  return proxy;
+}
+
+async function fetchWithRetry(searchUrl) {
   let browser;
   let lastError = null;
+  // Максимум попыток — длина списка прокси
+  const maxRetries = proxies.length;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const proxyRaw = getNextProxy();
     const userAgent = getRandomUserAgent();
 
+    // Формат прокси для puppeteer: если нет протокола — добавляем http://
+    const proxy = proxyRaw.match(/^https?:\/\//) ? proxyRaw : `http://${proxyRaw}`;
+
     try {
-      // Сессия для прокси
-      const sessionId = Math.floor(Math.random() * 10000);
-
-      // Только хост и порт в proxy-server (без логина и пароля)
-      const proxyHost = 'zproxy.lum-superproxy.io:22225';
-
       browser = await puppeteer.launch({
-        args: [...chromium.args, `--proxy-server=${proxyHost}`],
+        args: [...chromium.args, `--proxy-server=${proxy}`],
         executablePath: await chromium.executablePath(),
         headless: chromium.headless,
       });
@@ -94,19 +119,17 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
       const page = await browser.newPage();
       await page.setUserAgent(userAgent);
 
-      // Аутентификация на прокси
-      await page.authenticate({
-        username: `${BRIGHTDATA_USERNAME}-session-${sessionId}`,
-        password: BRIGHTDATA_API_KEY,
-      });
+      // Если твои прокси требуют аутентификацию - добавь здесь, например:
+      // await page.authenticate({username: 'user', password: 'pass'});
 
-      const response = await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+      const response = await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 20000 });
 
       if (!response || !response.ok()) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Ждём 1 секунду для загрузки JSON
+      await new Promise(r => setTimeout(r, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
 
@@ -128,8 +151,10 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
         await browser.close();
       }
 
-      console.warn(`Попытка ${attempt} не удалась с user-agent ${userAgent}: ${err.message}`);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.warn(`Попытка ${attempt} не удалась с прокси ${proxyRaw} и user-agent ${userAgent}: ${err.message}`);
+
+      // Сразу переключаемся на следующий прокси без задержек
+      // (если хочешь — можешь добавить небольшую паузу)
     }
   }
 
@@ -137,6 +162,14 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
 }
 
 app.get('/tineye', async (req, res) => {
+  try {
+    if (proxies.length === 0) {
+      loadProxies();
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.toString() });
+  }
+
   const { page = 1, url } = req.query;
 
   if (!url) {
