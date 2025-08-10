@@ -59,13 +59,22 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
+// --- Глобальные переменные для хранения прокси и user-agent ---
+let proxies = [];
+let badProxies = new Set();
+let badUserAgents = new Set();
 
-// Получаем случайный User-Agent
 function getRandomUserAgent() {
-  return userAgents[Math.floor(Math.random() * userAgents.length)];
+  // Фильтруем нерабочие user-agent из текущего списка
+  const available = userAgents.filter(ua => !badUserAgents.has(ua));
+  if (available.length === 0) {
+    // Если все user-agent "плохие" — сбрасываем к исходному состоянию
+    badUserAgents.clear();
+    return userAgents[Math.floor(Math.random() * userAgents.length)];
+  }
+  return available[Math.floor(Math.random() * available.length)];
 }
 
-// Форматируем прокси, добавляя http:// если нет схемы
 function formatProxy(proxy) {
   if (
     !proxy.startsWith('http://') &&
@@ -79,33 +88,40 @@ function formatProxy(proxy) {
   return proxy;
 }
 
-// Читаем прокси из файла и выбираем случайный
-async function getRandomProxy() {
+async function loadProxies() {
   const proxiesPath = path.resolve('./proxies.txt');
   const data = await fs.promises.readFile(proxiesPath, 'utf-8');
-  const proxies = data
+  proxies = data
     .split('\n')
     .map(line => line.trim())
     .filter(line => line.length > 0);
-
-  if (proxies.length === 0) {
-    throw new Error('Список прокси пуст');
-  }
-
-  const randomIndex = Math.floor(Math.random() * proxies.length);
-  return proxies[randomIndex];
 }
 
-// Основная функция с повторными попытками
-async function fetchWithRetry(searchUrl, maxRetries = 3) {
+function getRandomProxy() {
+  // Фильтруем нерабочие прокси
+  const available = proxies.filter(p => !badProxies.has(p));
+  if (available.length === 0) {
+    badProxies.clear();
+    return proxies[Math.floor(Math.random() * proxies.length)];
+  }
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+async function fetchWithRetry(searchUrl, maxRetries = 5) {
   let browser;
   let lastError = null;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const proxyRaw = await getRandomProxy();
-      const proxy = formatProxy(proxyRaw);
+  // Загружаем прокси (если не загружены)
+  if (proxies.length === 0) {
+    await loadProxies();
+  }
 
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const proxyRaw = getRandomProxy();
+    const proxy = formatProxy(proxyRaw);
+    const userAgent = getRandomUserAgent();
+
+    try {
       browser = await puppeteer.launch({
         args: [...chromium.args, `--proxy-server=${proxy}`],
         executablePath: await chromium.executablePath(),
@@ -113,7 +129,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
       });
 
       const page = await browser.newPage();
-      await page.setUserAgent(getRandomUserAgent());
+      await page.setUserAgent(userAgent);
 
       const response = await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
@@ -121,7 +137,6 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
 
-      // Ждём 1 секунду для полной загрузки JSON
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
@@ -138,10 +153,19 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
 
     } catch (err) {
       lastError = err;
+
+      // Помечаем прокси и user-agent как "плохие" для текущего запуска
+      badProxies.add(proxyRaw);
+      badUserAgents.add(userAgent);
+
       if (browser) {
         await browser.close();
       }
-      // Пауза 1 секунда перед повтором
+
+      // Логируем
+      console.warn(`Попытка ${attempt} не удалась с прокси ${proxyRaw} и user-agent ${userAgent}: ${err.message}`);
+
+      // Пауза 1 секунда
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
@@ -156,7 +180,6 @@ app.get('/tineye', async (req, res) => {
     return res.status(400).json({ error: 'Отсутствует параметр "url"' });
   }
 
-  // Добавляем тег stock в URL запроса
   const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(url)}&tags=stock`;
 
   try {
