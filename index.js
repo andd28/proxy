@@ -7,15 +7,14 @@ const path = require('path');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Загружаем список прокси
 const proxiesPath = path.join(__dirname, 'proxies.txt');
 const proxies = fs.readFileSync(proxiesPath, 'utf-8')
   .split(/\r?\n/)
   .map(line => line.trim())
-  .filter(line => line.length > 0);
+  .filter(Boolean);
 
-if (proxies.length === 0) {
-  console.error('Нет доступных прокси в proxies.txt');
+if (!proxies.length) {
+  console.error('Нет доступных прокси');
   process.exit(1);
 }
 
@@ -42,15 +41,14 @@ app.get('/tineye', async (req, res) => {
   const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(url)}`;
 
   let browser;
-  let proxy = getCurrentProxy();
-  let attempt = 0;
-  let maxProxyAttempts = proxies.length;
   let finalError = null;
 
-  while (attempt < maxProxyAttempts) {
-    try {
-      console.log(`🔍 Попытка ${attempt + 1}: используем прокси ${proxy} (запрос ${currentProxyCount + 1}/${maxRequestsPerProxy})`);
+  // Перебираем прокси, пока не найдём рабочий
+  for (let attempt = 0; attempt < proxies.length; attempt++) {
+    const proxy = getCurrentProxy();
+    console.log(`🔍 Проверяем прокси ${proxy} (попытка ${attempt + 1})`);
 
+    try {
       browser = await puppeteer.launch({
         args: [
           ...chromium.args,
@@ -65,21 +63,27 @@ app.get('/tineye', async (req, res) => {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
       );
 
-      await pageP.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+      // Быстрый таймаут 2 секунды
+      await pageP.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 2000 });
 
       const content = await pageP.evaluate(() => document.body.innerText);
       let json;
 
       try {
         json = JSON.parse(content);
-      } catch (e) {
+      } catch {
         throw new Error(`JSON parse error: ${content.slice(0, 200)}`);
       }
 
-      // Считаем использование прокси
+      // Если TinEye вернул пустой ответ, идём к следующему прокси
+      if (!json || Object.keys(json).length === 0) {
+        throw new Error('TinEye вернул пустой ответ');
+      }
+
+      // Счётчик использования прокси
       currentProxyCount++;
       if (currentProxyCount >= maxRequestsPerProxy) {
-        console.log(`🔄 Прокси ${proxy} достиг лимита ${maxRequestsPerProxy}, переключаемся`);
+        console.log(`🔄 Прокси ${proxy} достиг лимита, переключаемся`);
         switchToNextProxy();
       }
 
@@ -91,11 +95,9 @@ app.get('/tineye', async (req, res) => {
       });
 
     } catch (err) {
-      console.error(`❌ Ошибка на прокси ${proxy}:`, err.message);
+      console.error(`❌ Прокси ${getCurrentProxy()} не сработал: ${err.message}`);
       finalError = err;
       switchToNextProxy();
-      proxy = getCurrentProxy();
-      attempt++;
     } finally {
       if (browser) {
         try { await browser.close(); } catch {}
