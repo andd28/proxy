@@ -1,14 +1,17 @@
 {
   "name": "tineye-proxy",
-  "version": "1.0.0",
-  "description": "Proxy server for TinEye API without Puppeteer",
+  "version": "1.0.1",
+  "description": "TinEye proxy using node-fetch v2 (CommonJS) and https-proxy-agent",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "node-fetch": "^3.3.2",
+    "node-fetch": "2.6.9",
     "https-proxy-agent": "^7.0.2"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
