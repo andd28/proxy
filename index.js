@@ -5,6 +5,10 @@ const chromium = require('@sparticuz/chromium');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Твой Bright Data username и API ключ
+const BRIGHTDATA_USERNAME = 'bgawesom@gmail.com';
+const BRIGHTDATA_API_KEY = '5c5b53aa79e568b7097c11310970d888ecc19caad1d9b5c5075ea1044890a062';
+
 // Список 50 популярных User-Agent (пример, можно дополнить)
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
@@ -57,13 +61,13 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
-// Множество "плохих" user-agent, чтобы их временно не использовать
+
+// Множество "плохих" user-agent, чтобы временно их не использовать
 const badUserAgents = new Set();
 
 function getRandomUserAgent() {
   const available = userAgents.filter(ua => !badUserAgents.has(ua));
   if (available.length === 0) {
-    // Сброс плохих, если все плохие
     badUserAgents.clear();
     return userAgents[Math.floor(Math.random() * userAgents.length)];
   }
@@ -78,8 +82,12 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
     const userAgent = getRandomUserAgent();
 
     try {
+      // Формируем прокси с сессией (session - рандомное число для сессий)
+      const sessionId = Math.floor(Math.random() * 10000);
+      const proxyUrl = `http://${BRIGHTDATA_USERNAME}-session-${sessionId}:${BRIGHTDATA_API_KEY}@zproxy.lum-superproxy.io:22225`;
+
       browser = await puppeteer.launch({
-        args: chromium.args,
+        args: [...chromium.args, `--proxy-server=${proxyUrl}`],
         executablePath: await chromium.executablePath(),
         headless: chromium.headless,
       });
@@ -111,7 +119,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
     } catch (err) {
       lastError = err;
 
-      // Помечаем user-agent как плохой для текущего запуска
+      // Помечаем user-agent как плохой на этот запуск
       badUserAgents.add(userAgent);
 
       if (browser) {
@@ -120,7 +128,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 5) {
 
       console.warn(`Попытка ${attempt} не удалась с user-agent ${userAgent}: ${err.message}`);
 
-      // Пауза 1 секунда
+      // Пауза 1 секунда перед повтором
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
