@@ -1,0 +1,13 @@
+{
+  "name": "tineye-proxy",
+  "version": "1.0.0",
+  "description": "Proxy server for TinEye API with Puppeteer",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "puppeteer": "^21.3.8"
+  }
+}
