@@ -59,12 +59,27 @@ const userAgents = [
   "Mozilla/5.0 (Windows NT 6.2; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36"
 ];
 
-// Функция для получения случайного User-Agent
+
+// Получаем случайный User-Agent
 function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
 }
 
-// Функция для чтения прокси из файла и выбора случайного
+// Форматируем прокси, добавляя http:// если нет схемы
+function formatProxy(proxy) {
+  if (
+    !proxy.startsWith('http://') &&
+    !proxy.startsWith('https://') &&
+    !proxy.startsWith('socks://') &&
+    !proxy.startsWith('socks4://') &&
+    !proxy.startsWith('socks5://')
+  ) {
+    return 'http://' + proxy;
+  }
+  return proxy;
+}
+
+// Читаем прокси из файла и выбираем случайный
 async function getRandomProxy() {
   const proxiesPath = path.resolve('./proxies.txt');
   const data = await fs.promises.readFile(proxiesPath, 'utf-8');
@@ -81,13 +96,15 @@ async function getRandomProxy() {
   return proxies[randomIndex];
 }
 
+// Основная функция с повторными попытками
 async function fetchWithRetry(searchUrl, maxRetries = 3) {
   let browser;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const proxy = await getRandomProxy();
+      const proxyRaw = await getRandomProxy();
+      const proxy = formatProxy(proxyRaw);
 
       browser = await puppeteer.launch({
         args: [...chromium.args, `--proxy-server=${proxy}`],
@@ -104,7 +121,7 @@ async function fetchWithRetry(searchUrl, maxRetries = 3) {
         throw new Error(`HTTP status ${response ? response.status() : 'no response'}`);
       }
 
-      // Ждем 1 секунду для полной загрузки JSON
+      // Ждём 1 секунду для полной загрузки JSON
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       const content = await page.evaluate(() => document.body.innerText);
@@ -139,6 +156,7 @@ app.get('/tineye', async (req, res) => {
     return res.status(400).json({ error: 'Отсутствует параметр "url"' });
   }
 
+  // Добавляем тег stock в URL запроса
   const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(url)}&tags=stock`;
 
   try {
