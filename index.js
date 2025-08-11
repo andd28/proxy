@@ -1,3 +1,4 @@
+// index.js — исправленная версия (Vercel)
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
@@ -24,25 +25,33 @@ let currentProxyIndex = 0;
 let requestCounter = 0;
 const requestsPerProxy = 20;
 
+// ВАЖНО: не устанавливаем это многократно в каждой функции.
+// Если нужно отключить проверку сертификата — делаем один раз в начале (опционально).
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 function switchToNextProxy() {
+  if (proxies.length === 0) return;
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
   requestCounter = 0;
   console.log(`Сменили прокси на #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
 }
 
 function createAgent(proxy) {
-  // Отключаем проверку сертификата (TinEye иногда может иметь проблемы)
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
   return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
-async function fetchWithProxy(url) {
+/**
+ * Попытки переключения прокси ограничены attemptsLeft (чтобы не зацикливать рекурсию).
+ * Возвращает **сырный** JSON от TinEye (не обёртку).
+ */
+async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   if (proxies.length === 0) {
     throw new Error('Список прокси пуст или не загружен!');
   }
+  if (attemptsLeft <= 0) {
+    throw new Error('Все прокси не сработали (исчерпаны попытки).');
+  }
 
-  // Переключаем прокси, если достигли лимита запросов на текущем
   if (requestCounter >= requestsPerProxy) {
     switchToNextProxy();
   }
@@ -57,27 +66,20 @@ async function fetchWithProxy(url) {
     if (!res.ok) {
       throw new Error(`HTTP статус ${res.status}`);
     }
-
+    // возвращаем именно JSON от TinEye
     const json = await res.json();
-    if (!json || Object.keys(json).length === 0) {
-      throw new Error('Пустой JSON');
+
+    // защита: если API вернул пустой объект — это тоже ошибка
+    if (!json || (typeof json === 'object' && Object.keys(json).length === 0)) {
+      throw new Error('Пустой JSON от TinEye');
     }
 
     requestCounter++;
-    return {
-      proxyUsed: proxy,
-      proxyIndex: currentProxyIndex,
-      requestCountForProxy: requestCounter,
-      data: json,
-    };
+    return json; // <- ВАЖНО: raw TinEye JSON
   } catch (err) {
-    console.error(`Прокси ${proxy} не сработал: ${err.message}`);
-
-    // При ошибке меняем прокси и повторяем попытку (рекурсивно)
+    console.error(`Прокси ${proxy} не сработал: ${err.message}. Попыток осталось: ${attemptsLeft - 1}`);
     switchToNextProxy();
-
-    // Рекурсивно повторяем запрос
-    return fetchWithProxy(url);
+    return fetchWithProxy(url, attemptsLeft - 1);
   }
 }
 
@@ -88,6 +90,7 @@ module.exports = async (req, res) => {
     const reqUrl = new URL(req.url, base);
     const page = reqUrl.searchParams.get('page') || '1';
     const imageUrl = reqUrl.searchParams.get('url');
+    const tags = reqUrl.searchParams.get('tags'); // <-- пробрасываем tags если есть
 
     if (!imageUrl) {
       res.statusCode = 400;
@@ -96,13 +99,19 @@ module.exports = async (req, res) => {
       return;
     }
 
-    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
+    let searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
+    if (tags) {
+      searchUrl += `&tags=${encodeURIComponent(tags)}`;
+    }
 
-    const result = await fetchWithProxy(searchUrl);
+    console.log('查询 TinEye URL:', searchUrl);
+
+    const tineyeJson = await fetchWithProxy(searchUrl);
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify(result));
+    // отдаем ТОЧНО тот JSON, который вернул TinEye (не обёртку)
+    res.end(JSON.stringify(tineyeJson));
   } catch (err) {
     console.error('Handler error:', err && err.stack ? err.stack : err);
     res.statusCode = 500;
