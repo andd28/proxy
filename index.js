@@ -58,7 +58,7 @@ module.exports = async (req, res) => {
     }
 
     const encodedUrl = encodeURIComponent(imageUrl);
-    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodedUrl}`;
+    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
 
     console.log('Запрос к TinEye:', searchUrl);
 
