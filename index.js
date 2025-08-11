@@ -1,4 +1,4 @@
-// index.js — версия с мгновенным переключением при 429/TLS-обрыве и авто-TooSimple через 20с
+// index.js — версия с мгновенным переключением при 429 или обрыве TLS
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
@@ -27,7 +27,6 @@ const requestsPerProxy = 20;
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// ---------- Вспомогательные функции ----------
 function switchToNextProxy() {
   if (proxies.length === 0) return;
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
@@ -39,35 +38,6 @@ function createAgent(proxy) {
   return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
-function tooSimpleMock() {
-  return {
-    page: 1,
-    sort_selector: null,
-    limit: 10,
-    domain_name: "",
-    no_cache: false,
-    image_server: "https://img.tineye.com/",
-    load_query_summary: false,
-    show_unavailable_domains: false,
-    sort: "score",
-    order: "desc",
-    domain: "",
-    tags: "stock",
-    offset: 0,
-    query_hash: "",
-    suggestions: {
-      key: "NO_SIGNATURE_ERROR",
-      title: "Whoops, we are sorry.",
-      suggestions: [],
-      description: [
-        "Your image is too simple to find matches. TinEye requires a basic level of visual detail to successfully identify matches. Please upload a more detailed image."
-      ]
-    },
-    error: "Too Simple"
-  };
-}
-
-// ---------- Основная функция ----------
 async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   if (proxies.length === 0) {
     throw new Error('Список прокси пуст или не загружен!');
@@ -86,15 +56,7 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   const agent = createAgent(proxy);
 
   try {
-    const res = await Promise.race([
-      fetch(url, { agent, timeout: 25000 }), // максимальный timeout на fetch
-      new Promise((_, reject) => setTimeout(() => reject(new Error('TOO_SIMPLE_TIMEOUT')), 20000))
-    ]);
-
-    if (res instanceof Error && res.message === 'TOO_SIMPLE_TIMEOUT') {
-      console.warn(`Ответ завис >20с — возвращаем "Too Simple" для ${proxy}`);
-      return tooSimpleMock();
-    }
+    const res = await fetch(url, { agent, timeout: 8000 });
 
     if (res.status === 429) {
       console.warn(`HTTP 429 от прокси ${proxy} — переключаемся мгновенно`);
@@ -115,11 +77,10 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
     return json;
   } catch (err) {
     const msg = err.message || '';
-    if (msg === 'TOO_SIMPLE_TIMEOUT') {
-      console.warn(`Ответ не пришёл за 20с — форсим "Too Simple"`);
-      return tooSimpleMock();
-    }
-    if (msg.includes('Client network socket disconnected before secure') || msg.includes('ECONNRESET')) {
+    if (
+      msg.includes('Client network socket disconnected before secure') ||
+      msg.includes('ECONNRESET')
+    ) {
       console.warn(`Ошибка TLS/сокета через ${proxy} — переключаемся мгновенно`);
       switchToNextProxy();
       return fetchWithProxy(url, attemptsLeft - 1);
@@ -131,7 +92,7 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   }
 }
 
-// ---------- Vercel handler ----------
+// Vercel handler
 module.exports = async (req, res) => {
   try {
     const base = `https://${req.headers.host || 'example.com'}`;
@@ -167,7 +128,7 @@ module.exports = async (req, res) => {
   }
 };
 
-// ---------- Локальный тест ----------
+// Локальный тест
 if (require.main === module) {
   const express = require('express');
   const app = express();
