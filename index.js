@@ -1,183 +1,76 @@
-const fs = require('fs');
-const path = require('path');
-const fetch = require('node-fetch'); // v2
-const { HttpsProxyAgent } = require('https-proxy-agent');
-
-const proxiesPath = path.join(__dirname, 'proxies.txt');
+import fs from "fs";
+import path from "path";
+import fetch from "node-fetch";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 let proxies = [];
-try {
-  proxies = fs.readFileSync(proxiesPath, 'utf8')
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
-} catch (e) {
-  console.error('Ошибка чтения proxies.txt:', e && e.message);
-}
+let currentProxyIndex = 0;
+let requestCount = 0;
+const REQUESTS_PER_PROXY = 20;
 
-async function testProxy(proxy) {
-  const [host, port] = proxy.split(':');
-  const agent = new HttpsProxyAgent({
-    host,
-    port,
-    rejectUnauthorized: false,
-  });
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2000);
-  try {
-    const res = await fetch('https://tineye.com/api/v1/result_json/?page=1&url=https%3A%2F%2Ftest.capital-site.ru%2Fwp-content%2Fuploads%2F2021%2F07%2Fteam-02.jpg', {
-      agent,
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    return res.ok;
-  } catch {
-    clearTimeout(timeoutId);
-    return false;
+// Загружаем список прокси при старте
+function loadProxies() {
+  const filePath = path.join(process.cwd(), "proxies.txt");
+  if (!fs.existsSync(filePath)) {
+    console.error("Файл proxies.txt не найден!");
+    process.exit(1);
+  }
+  proxies = fs
+    .readFileSync(filePath, "utf-8")
+    .split("\n")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `socks4://${p}`);
+  if (proxies.length === 0) {
+    console.error("Список прокси пуст!");
+    process.exit(1);
   }
 }
 
-async function filterWorkingProxies(proxiesList) {
-  const checks = proxiesList.map(async (proxy) => {
-    const ok = await testProxy(proxy);
-    console.log(`Прокси ${proxy} рабочий? ${ok}`);
-    return ok ? proxy : null;
-  });
-  const results = await Promise.all(checks);
-  return results.filter(Boolean);
-}
-
-let currentProxyIndex = 0;
-let requestCounter = 0;
-const requestsPerProxy = 10;
-
-process.on('uncaughtException', (err) => {
-  console.error('uncaughtException', err);
-});
-process.on('unhandledRejection', (err) => {
-  console.error('unhandledRejection', err);
-});
-
-function switchToNextProxy() {
-  if (!proxies.length) return;
+function getNextProxy() {
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
-  requestCounter = 0;
+  console.log(`🔄 Переключаемся на прокси: ${proxies[currentProxyIndex]}`);
 }
 
 async function fetchWithProxy(url) {
-  if (!proxies.length) {
-    throw new Error('No proxies configured (proxies.txt is empty or missing or no working proxies)');
+  if (requestCount >= REQUESTS_PER_PROXY) {
+    requestCount = 0;
+    getNextProxy();
   }
 
-  let attempts = 0;
-  let lastError = null;
-  const total = proxies.length;
+  const proxyUrl = proxies[currentProxyIndex];
+  const agent = new SocksProxyAgent(proxyUrl);
 
-  while (attempts < total) {
-    if (requestCounter >= requestsPerProxy) {
-      switchToNextProxy();
+  try {
+    console.log(`🌍 Запрос через ${proxyUrl} → ${url}`);
+    requestCount++;
+
+    const response = await fetch(url, { agent });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
-
-    const proxy = proxies[currentProxyIndex];
-    console.log(`Пытаемся прокси [${currentProxyIndex}]: ${proxy} (использовано ${requestCounter}/${requestsPerProxy})`);
-
-    const [host, port] = proxy.split(':');
-
-    const agent = new HttpsProxyAgent({
-      host,
-      port,
-      rejectUnauthorized: false,
-    });
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s
-
-    try {
-      const res = await fetch(url, { agent, signal: controller.signal });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        lastError = `HTTP ${res.status}`;
-        console.warn(`Прокси ${proxy} вернул статус ${res.status}, переключаемся`);
-        switchToNextProxy();
-        attempts++;
-        continue;
-      }
-
-      const json = await res.json();
-
-      if (!json || Object.keys(json).length === 0) {
-        lastError = 'Empty JSON from TinEye';
-        console.warn(`Прокси ${proxy} вернул пустой JSON, переключаемся`);
-        switchToNextProxy();
-        attempts++;
-        continue;
-      }
-
-      requestCounter++;
-      return { proxyUsed: proxy, proxyIndex: currentProxyIndex, requestCountForProxy: requestCounter, data: json };
-
-    } catch (err) {
-      clearTimeout(timeoutId);
-      lastError = err && err.message ? err.message : String(err);
-      console.error(`Прокси ${proxy} не сработал: ${lastError}`);
-      switchToNextProxy();
-      attempts++;
-      continue;
-    }
+    return await response.text();
+  } catch (err) {
+    console.warn(`⚠️ Ошибка прокси ${proxyUrl}: ${err.message}`);
+    getNextProxy();
+    return fetchWithProxy(url); // повторяем с новым прокси
   }
-
-  throw new Error(`Все прокси не сработали. Последняя ошибка: ${lastError}`);
 }
 
-// -- инициализация: проверяем прокси, фильтруем рабочие, затем запускаем сервер / export
+// API-эндпоинт Vercel
+export default async function handler(req, res) {
+  if (!proxies.length) loadProxies();
 
-(async () => {
-  proxies = await filterWorkingProxies(proxies);
-  if (proxies.length === 0) {
-    console.error('Нет рабочих прокси после проверки!');
-    process.exit(1);
-  } else {
-    console.log(`Рабочих прокси после проверки: ${proxies.length}`);
+  const targetUrl = req.query.url;
+  if (!targetUrl) {
+    return res.status(400).json({ error: "Укажите ?url=" });
   }
-})();
 
-// Vercel / Serverless handler
-module.exports = async (req, res) => {
   try {
-    const base = `https://${req.headers.host || 'example.com'}`;
-    const reqUrl = new URL(req.url, base);
-    const page = reqUrl.searchParams.get('page') || '1';
-    const imageUrl = reqUrl.searchParams.get('url');
-
-    if (!imageUrl) {
-      res.statusCode = 400;
-      res.setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(JSON.stringify({ error: 'Missing "url" query parameter' }));
-      return;
-    }
-
-    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
-
-    const result = await fetchWithProxy(searchUrl);
-
-    res.statusCode = 200;
-    res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify(result));
-
+    const html = await fetchWithProxy(targetUrl);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.status(200).send(html);
   } catch (err) {
-    console.error('Handler error:', err && err.stack ? err.stack : err);
-    res.statusCode = 500;
-    res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
+    res.status(500).json({ error: err.message });
   }
-};
-
-// -- локальный тестовый сервер (запускается если файл запущен напрямую)
-if (require.main === module) {
-  const express = require('express');
-  const app = express();
-  app.get('/tineye', module.exports);
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Local test server listening: http://localhost:${port}/tineye`));
 }
