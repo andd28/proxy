@@ -57,7 +57,10 @@ module.exports = async (req, res) => {
       return;
     }
 
-    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
+    const encodedUrl = encodeURIComponent(imageUrl);
+    const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodedUrl}`;
+
+    console.log('Запрос к TinEye:', searchUrl);
 
     const data = await fetchWithProxy(searchUrl);
 
@@ -71,6 +74,7 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify({ error: err.message || String(err) }));
   }
 };
+
 
 // Локальный запуск для теста
 if (require.main === module) {
