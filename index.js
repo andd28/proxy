@@ -1,48 +1,87 @@
+const fs = require('fs');
+const path = require('path');
 const fetch = require('node-fetch'); // v2
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-// Жёстко заданный SOCKS4 прокси
-const PROXY = '159.65.128.194:1080';
+const proxiesPath = path.join(__dirname, 'proxies.txt');
 
-// Создаём агент для SOCKS4
-function createAgent() {
-  // Отключаем проверку сертификата (для теста)
+let proxies = [];
+try {
+  proxies = fs.readFileSync(proxiesPath, 'utf8')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  console.log(`Загружено прокси из proxies.txt: ${proxies.length}`);
+} catch (e) {
+  console.error('Ошибка чтения proxies.txt:', e && e.message);
+}
+
+if (proxies.length === 0) {
+  console.warn('Внимание! Список прокси пуст.');
+}
+
+let currentProxyIndex = 0;
+let requestCounter = 0;
+const requestsPerProxy = 20;
+
+function switchToNextProxy() {
+  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
+  requestCounter = 0;
+  console.log(`Сменили прокси на #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
+}
+
+function createAgent(proxy) {
+  // Отключаем проверку сертификата (TinEye иногда может иметь проблемы)
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-  return new SocksProxyAgent(`socks4://${PROXY}`);
+  return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
 async function fetchWithProxy(url) {
-  const agent = createAgent();
+  if (proxies.length === 0) {
+    throw new Error('Список прокси пуст или не загружен!');
+  }
 
-  const controller = new AbortController();
-  const timeoutMs = 10000;
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
+  // Переключаем прокси, если достигли лимита запросов на текущем
+  if (requestCounter >= requestsPerProxy) {
+    switchToNextProxy();
+  }
+
+  const proxy = proxies[currentProxyIndex];
+  console.log(`Используем прокси #${currentProxyIndex}: ${proxy} (${requestCounter + 1}/${requestsPerProxy})`);
+
+  const agent = createAgent(proxy);
 
   try {
-    const res = await fetch(url, {
-      agent,
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-      },
-    });
-    clearTimeout(timeoutId);
-
+    const res = await fetch(url, { agent, timeout: 8000 });
     if (!res.ok) {
-      throw new Error(`HTTP status ${res.status}`);
+      throw new Error(`HTTP статус ${res.status}`);
     }
 
     const json = await res.json();
-    return json;
+    if (!json || Object.keys(json).length === 0) {
+      throw new Error('Пустой JSON');
+    }
+
+    requestCounter++;
+    return {
+      proxyUsed: proxy,
+      proxyIndex: currentProxyIndex,
+      requestCountForProxy: requestCounter,
+      data: json,
+    };
   } catch (err) {
-    clearTimeout(timeoutId);
-    throw err;
+    console.error(`Прокси ${proxy} не сработал: ${err.message}`);
+
+    // При ошибке меняем прокси и повторяем попытку (рекурсивно)
+    switchToNextProxy();
+
+    // Рекурсивно повторяем запрос
+    return fetchWithProxy(url);
   }
 }
 
+// Vercel handler
 module.exports = async (req, res) => {
   try {
     const base = `https://${req.headers.host || 'example.com'}`;
@@ -57,26 +96,22 @@ module.exports = async (req, res) => {
       return;
     }
 
-    const encodedUrl = encodeURIComponent(imageUrl);
     const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
 
-    console.log('Запрос к TinEye:', searchUrl);
-
-    const data = await fetchWithProxy(searchUrl);
+    const result = await fetchWithProxy(searchUrl);
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ proxyUsed: PROXY, data }));
+    res.end(JSON.stringify(result));
   } catch (err) {
-    console.error('Handler error:', err);
+    console.error('Handler error:', err && err.stack ? err.stack : err);
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: err.message || String(err) }));
+    res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
   }
 };
 
-
-// Локальный запуск для теста
+// Локальный тестовый сервер (при node index.js)
 if (require.main === module) {
   const express = require('express');
   const app = express();
@@ -84,5 +119,5 @@ if (require.main === module) {
   app.get('/tineye', module.exports);
 
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Local server listening on http://localhost:${port}/tineye`));
+  app.listen(port, () => console.log(`Local test server listening: http://localhost:${port}/tineye`));
 }
