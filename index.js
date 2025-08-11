@@ -1,76 +1,66 @@
-import fs from "fs";
-import path from "path";
-import fetch from "node-fetch";
-import { SocksProxyAgent } from "socks-proxy-agent";
+// index.js
+const express = require("express");
+const fs = require("fs");
+const fetch = require("node-fetch");
+const { SocksProxyAgent } = require("socks-proxy-agent");
 
-let proxies = [];
-let currentProxyIndex = 0;
-let requestCount = 0;
-const REQUESTS_PER_PROXY = 20;
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Загружаем список прокси при старте
-function loadProxies() {
-  const filePath = path.join(process.cwd(), "proxies.txt");
-  if (!fs.existsSync(filePath)) {
-    console.error("Файл proxies.txt не найден!");
-    process.exit(1);
-  }
-  proxies = fs
-    .readFileSync(filePath, "utf-8")
-    .split("\n")
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => `socks4://${p}`);
-  if (proxies.length === 0) {
-    console.error("Список прокси пуст!");
-    process.exit(1);
-  }
-}
+// Читаем список прокси из файла
+let proxies = fs
+  .readFileSync("proxies.txt", "utf-8")
+  .split("\n")
+  .map(p => p.trim())
+  .filter(Boolean);
 
-function getNextProxy() {
-  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
-  console.log(`🔄 Переключаемся на прокси: ${proxies[currentProxyIndex]}`);
-}
+console.log(`Загружено ${proxies.length} прокси из proxies.txt`);
 
 async function fetchWithProxy(url) {
-  if (requestCount >= REQUESTS_PER_PROXY) {
-    requestCount = 0;
-    getNextProxy();
-  }
+  for (let proxy of proxies) {
+    try {
+      console.log(`Пробую прокси: ${proxy}`);
+      const agent = new SocksProxyAgent(`socks4://${proxy}`);
 
-  const proxyUrl = proxies[currentProxyIndex];
-  const agent = new SocksProxyAgent(proxyUrl);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000); // 5 секунд
 
-  try {
-    console.log(`🌍 Запрос через ${proxyUrl} → ${url}`);
-    requestCount++;
+      const res = await fetch(url, { agent, signal: controller.signal });
 
-    const response = await fetch(url, { agent });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        console.log(`Прокси ${proxy} вернул статус ${res.status}`);
+        continue;
+      }
+
+      const text = await res.text();
+      console.log(`✅ Успех через прокси: ${proxy}`);
+      return text;
+
+    } catch (err) {
+      console.log(`❌ Ошибка на прокси ${proxy}: ${err.message}`);
+      continue;
     }
-    return await response.text();
-  } catch (err) {
-    console.warn(`⚠️ Ошибка прокси ${proxyUrl}: ${err.message}`);
-    getNextProxy();
-    return fetchWithProxy(url); // повторяем с новым прокси
   }
+
+  throw new Error("Нет доступных прокси");
 }
 
-// API-эндпоинт Vercel
-export default async function handler(req, res) {
-  if (!proxies.length) loadProxies();
-
+app.get("/tineye", async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) {
-    return res.status(400).json({ error: "Укажите ?url=" });
+    return res.status(400).send("Укажите ?url=...");
   }
 
   try {
-    const html = await fetchWithProxy(targetUrl);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.status(200).send(html);
+    const data = await fetchWithProxy(targetUrl);
+    res.send(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).send(`Ошибка: ${err.message}`);
   }
-}
+});
+
+app.listen(PORT, () => {
+  console.log(`Сервер запущен на порту ${PORT}`);
+});
