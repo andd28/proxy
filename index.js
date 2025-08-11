@@ -1,116 +1,46 @@
-const fs = require('fs');
-const path = require('path');
 const fetch = require('node-fetch'); // v2
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-const proxiesPath = path.join(__dirname, 'proxies.txt');
+// Жёстко заданный SOCKS4 прокси
+const PROXY = '159.65.128.194:1080';
 
-let proxies = [];
-try {
-  proxies = fs.readFileSync(proxiesPath, 'utf8')
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
-  console.log(`Loaded proxies from proxies.txt: ${proxies.length}`);
-} catch (e) {
-  console.error('Error reading proxies.txt:', e && e.message);
-}
-
-let currentProxyIndex = 0;
-let requestCounter = 0;
-const requestsPerProxy = 20;
-
-function switchToNextProxy() {
-  if (!proxies.length) return;
-  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
-  requestCounter = 0;
-  console.log(`Switched to proxy #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
-}
-
-function createAgent(proxy) {
-  // Отключаем проверку SSL (для теста, осторожно!)
+// Создаём агент для SOCKS4
+function createAgent() {
+  // Отключаем проверку сертификата (для теста)
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-  return new SocksProxyAgent(`socks4://${proxy}`);
+
+  return new SocksProxyAgent(`socks4://${PROXY}`);
 }
 
 async function fetchWithProxy(url) {
-  if (proxies.length === 0) {
-    throw new Error('Proxy list is empty or not loaded');
-  }
+  const agent = createAgent();
 
-  let attempts = 0;
-  let lastError = null;
+  const controller = new AbortController();
+  const timeoutMs = 10000;
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
 
-  while (attempts < proxies.length) {
-    if (requestCounter >= requestsPerProxy) {
-      switchToNextProxy();
+  try {
+    const res = await fetch(url, {
+      agent,
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+      },
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      throw new Error(`HTTP status ${res.status}`);
     }
 
-    const proxy = proxies[currentProxyIndex];
-    console.log(`Using proxy #${currentProxyIndex}: ${proxy} (${requestCounter}/${requestsPerProxy})`);
-
-    const agent = createAgent(proxy);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s таймаут
-
-    try {
-      const res = await fetch(url, {
-        agent,
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        }
-      });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        lastError = `HTTP status ${res.status}`;
-        console.warn(`Proxy ${proxy} returned status ${res.status}, switching proxy`);
-        switchToNextProxy();
-        attempts++;
-        continue;
-      }
-
-      const text = await res.text();
-
-      if (!text || text.trim().length === 0) {
-        lastError = 'Empty response body';
-        console.warn(`Proxy ${proxy} returned empty body, switching proxy`);
-        switchToNextProxy();
-        attempts++;
-        continue;
-      }
-
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch (parseErr) {
-        lastError = `JSON parse error: ${parseErr.message}`;
-        console.warn(`Proxy ${proxy} JSON parse failed, switching proxy`);
-        switchToNextProxy();
-        attempts++;
-        continue;
-      }
-
-      requestCounter++;
-      return {
-        proxyUsed: proxy,
-        proxyIndex: currentProxyIndex,
-        requestCountForProxy: requestCounter,
-        data: json,
-      };
-
-    } catch (err) {
-      clearTimeout(timeoutId);
-      lastError = err.message || String(err);
-      console.error(`Proxy ${proxy} failed: ${lastError}`);
-      switchToNextProxy();
-      attempts++;
-    }
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
   }
-
-  throw new Error(`All proxies failed. Last error: ${lastError}`);
 }
 
 module.exports = async (req, res) => {
@@ -129,20 +59,20 @@ module.exports = async (req, res) => {
 
     const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
 
-    const result = await fetchWithProxy(searchUrl);
+    const data = await fetchWithProxy(searchUrl);
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify(result));
+    res.end(JSON.stringify({ proxyUsed: PROXY, data }));
   } catch (err) {
-    console.error('Handler error:', err && err.stack ? err.stack : err);
+    console.error('Handler error:', err);
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
+    res.end(JSON.stringify({ error: err.message || String(err) }));
   }
 };
 
-// Локальный тест (express)
+// Локальный запуск для теста
 if (require.main === module) {
   const express = require('express');
   const app = express();
