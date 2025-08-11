@@ -1,4 +1,4 @@
-// index.js — версия с мгновенным переключением при 429 или обрыве TLS
+// index.js — версия с быстрым переключением на следующий прокси при долгом подключении
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
@@ -38,6 +38,7 @@ function createAgent(proxy) {
   return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
+// Функция с быстрым переключением при зависании
 async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   if (proxies.length === 0) {
     throw new Error('Список прокси пуст или не загружен!');
@@ -55,16 +56,21 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
 
   const agent = createAgent(proxy);
 
-  try {
-    const res = await fetch(url, { agent, timeout: 8000 });
+  // Таймаут подключения (не всего запроса!)
+  const CONNECT_TIMEOUT = 1500; // 1.5 секунды
+  const REQUEST_TIMEOUT = 5000; // общий таймаут запроса
 
-    if (res.status === 429) {
-      console.warn(`HTTP 429 от прокси ${proxy} — переключаемся мгновенно`);
-      switchToNextProxy();
-      return fetchWithProxy(url, attemptsLeft - 1);
-    }
+  try {
+    const controller = new AbortController();
+    const connectTimer = setTimeout(() => controller.abort(), CONNECT_TIMEOUT);
+
+    const res = await fetch(url, { agent, timeout: REQUEST_TIMEOUT, signal: controller.signal });
+    clearTimeout(connectTimer);
 
     if (!res.ok) {
+      if (res.status === 429) {
+        throw new Error('HTTP 429 Too Many Requests');
+      }
       throw new Error(`HTTP статус ${res.status}`);
     }
 
@@ -76,17 +82,8 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
     requestCounter++;
     return json;
   } catch (err) {
-    const msg = err.message || '';
-    if (
-      msg.includes('Client network socket disconnected before secure') ||
-      msg.includes('ECONNRESET')
-    ) {
-      console.warn(`Ошибка TLS/сокета через ${proxy} — переключаемся мгновенно`);
-      switchToNextProxy();
-      return fetchWithProxy(url, attemptsLeft - 1);
-    }
-
-    console.error(`Прокси ${proxy} не сработал: ${msg}. Попыток осталось: ${attemptsLeft - 1}`);
+    clearTimeout();
+    console.error(`Прокси ${proxy} не сработал: ${err.message}. Переходим к следующему...`);
     switchToNextProxy();
     return fetchWithProxy(url, attemptsLeft - 1);
   }
@@ -113,7 +110,7 @@ module.exports = async (req, res) => {
       searchUrl += `&tags=${encodeURIComponent(tags)}`;
     }
 
-    console.log('TinEye URL:', searchUrl);
+    console.log('Запрос к TinEye:', searchUrl);
 
     const tineyeJson = await fetchWithProxy(searchUrl);
 
@@ -121,18 +118,18 @@ module.exports = async (req, res) => {
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.end(JSON.stringify(tineyeJson));
   } catch (err) {
-    console.error('Handler error:', err);
+    console.error('Handler error:', err && err.stack ? err.stack : err);
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: err.message || String(err) }));
+    res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
   }
 };
 
-// Локальный тест
+// Локальный тестовый сервер
 if (require.main === module) {
   const express = require('express');
   const app = express();
   app.get('/tineye', module.exports);
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Local test server: http://localhost:${port}/tineye`));
+  app.listen(port, () => console.log(`Local test server listening: http://localhost:${port}/tineye`));
 }
