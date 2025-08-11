@@ -1,17 +1,16 @@
-// index.js — улучшенная версия (Vercel) с быстрым переключением и защитой от 429
+// index.js — версия без p-limit, с внутренним контролем параллельности
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const pLimit = require('p-limit');
 
 const proxiesPath = path.join(__dirname, 'proxies.txt');
 const requestsPerProxy = 20;
-const proxyCooldownMs = 30000; // 30 секунд между использованиями одного прокси
-const proxyBanMs = 3 * 60 * 1000; // 3 минуты бан за 429
-const maxConsecutiveErrors = 3; // после 3 ошибок подряд прокси уходит в бан
-const timeoutMs = 5000; // 5 сек таймаут запроса
-const parallelLimit = 3; // одновременно запросов
+const proxyCooldownMs = 30000; // 30 секунд между запросами к одному прокси
+const proxyBanMs = 3 * 60 * 1000; // 3 минуты бан за 429 или за ошибки
+const maxConsecutiveErrors = 3; // после 3 ошибок подряд бан
+const timeoutMs = 5000; // 5 секунд таймаут
+const parallelLimit = 3; // максимум параллельных запросов
 
 // Загружаем прокси
 let proxies = [];
@@ -34,22 +33,14 @@ try {
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// Получаем доступный прокси
+// Получить доступный прокси
 function getAvailableProxy() {
   const now = Date.now();
-  let candidate = null;
-
-  for (let p of proxies) {
-    if (now < p.bannedUntil) continue; // прокси в бане
-    if (now - p.lastUsed < proxyCooldownMs) continue; // слишком часто
-    if (p.usageCount >= requestsPerProxy) {
-      p.usageCount = 0;
-      continue;
-    }
-    candidate = p;
-    break;
-  }
-  return candidate;
+  return proxies.find(p =>
+    now >= p.bannedUntil &&
+    now - p.lastUsed >= proxyCooldownMs &&
+    p.usageCount < requestsPerProxy
+  );
 }
 
 function createAgent(proxy) {
@@ -95,6 +86,30 @@ async function fetchWithProxy(url) {
   }
 }
 
+// Простая очередь для параллельных задач
+let activeCount = 0;
+const queue = [];
+
+function runNext() {
+  if (activeCount >= parallelLimit || queue.length === 0) return;
+  const { fn, resolve, reject } = queue.shift();
+  activeCount++;
+  fn()
+    .then(resolve)
+    .catch(reject)
+    .finally(() => {
+      activeCount--;
+      runNext();
+    });
+}
+
+function enqueue(fn) {
+  return new Promise((resolve, reject) => {
+    queue.push({ fn, resolve, reject });
+    runNext();
+  });
+}
+
 // Vercel handler
 module.exports = async (req, res) => {
   try {
@@ -114,7 +129,7 @@ module.exports = async (req, res) => {
     let searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
     if (tags) searchUrl += `&tags=${encodeURIComponent(tags)}`;
 
-    const data = await fetchWithProxy(searchUrl);
+    const data = await enqueue(() => fetchWithProxy(searchUrl));
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -126,23 +141,24 @@ module.exports = async (req, res) => {
   }
 };
 
-// Локальный тест
+// Локальный тестовый сервер
 if (require.main === module) {
   const express = require('express');
   const app = express();
-  const limit = pLimit(parallelLimit);
 
   app.get('/tineye', module.exports);
 
-  // пример параллельной проверки
+  // batch-запрос
   app.get('/batch', async (req, res) => {
     const urls = (req.query.urls || '').split(',').map(u => u.trim()).filter(Boolean);
-    const results = await Promise.allSettled(urls.map(url => limit(() =>
-      fetchWithProxy(`https://tineye.com/api/v1/result_json/?page=1&url=${encodeURIComponent(url)}&tags=stock`)
-    )));
+    const results = await Promise.allSettled(
+      urls.map(url => enqueue(() =>
+        fetchWithProxy(`https://tineye.com/api/v1/result_json/?page=1&url=${encodeURIComponent(url)}&tags=stock`)
+      ))
+    );
     res.json(results);
   });
 
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Local test server: http://localhost:${port}`));
+  app.listen(port, () => console.log(`Local test server listening: http://localhost:${port}`));
 }
