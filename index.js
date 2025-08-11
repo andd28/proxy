@@ -1,23 +1,43 @@
-const fs = require('fs').promises;
+const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
+const fetch = require('node-fetch'); // v2
+const https = require('https');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
+const proxiesPath = path.join(__dirname, 'proxies.txt');
+
 let proxies = [];
+try {
+  proxies = fs.readFileSync(proxiesPath, 'utf8')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  console.log(`Загружено прокси из proxies.txt: ${proxies.length}`);
+} catch (e) {
+  console.error('Ошибка чтения proxies.txt:', e && e.message);
+}
+
 let currentProxyIndex = 0;
 let requestCounter = 0;
 const requestsPerProxy = 20;
 
-// Цикл переключения прокси
 function switchToNextProxy() {
-  if (proxies.length === 0) return;
+  if (!proxies.length) return;
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
   requestCounter = 0;
 }
 
+function createAgent(proxy) {
+  // Отключаем проверку SSL сертификата (для TinEye через прокси с проблемами SSL)
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  // Возвращаем SocksProxyAgent для SOCKS4
+  return new SocksProxyAgent(`socks4://${proxy}`);
+}
+
 async function fetchWithProxy(url) {
   if (proxies.length === 0) {
-    throw new Error('Прокси не загружены или список пуст');
+    throw new Error('Список прокси пуст или не загружен!');
   }
 
   let attempts = 0;
@@ -31,15 +51,14 @@ async function fetchWithProxy(url) {
     const proxy = proxies[currentProxyIndex];
     console.log(`Используем прокси #${currentProxyIndex}: ${proxy} (${requestCounter}/${requestsPerProxy})`);
 
-    // SOCKS4 прокси URL формат для socks-proxy-agent: "socks4://host:port"
-    const agent = new SocksProxyAgent(`socks4://${proxy}`);
+    const agent = createAgent(proxy);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // таймаут 5 секунд
 
     try {
       const res = await fetch(url, { agent, signal: controller.signal });
-      clearTimeout(timeout);
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         lastError = `HTTP ${res.status}`;
@@ -50,6 +69,7 @@ async function fetchWithProxy(url) {
       }
 
       const json = await res.json();
+
       if (!json || Object.keys(json).length === 0) {
         lastError = 'Пустой JSON из TinEye';
         console.warn(`Прокси ${proxy} вернул пустой JSON, переключаемся`);
@@ -66,7 +86,7 @@ async function fetchWithProxy(url) {
         data: json,
       };
     } catch (err) {
-      clearTimeout(timeout);
+      clearTimeout(timeoutId);
       lastError = err.message || String(err);
       console.error(`Прокси ${proxy} не сработал: ${lastError}`);
       switchToNextProxy();
@@ -78,33 +98,10 @@ async function fetchWithProxy(url) {
   throw new Error(`Все прокси не сработали. Последняя ошибка: ${lastError}`);
 }
 
-async function loadProxies() {
-  try {
-    const proxiesPath = path.join(__dirname, 'proxies.txt');
-    const content = await fs.readFile(proxiesPath, 'utf8');
-    proxies = content
-      .split(/\r?\n/)
-      .map(s => s.trim())
-      .filter(Boolean);
-    console.log(`Загружено прокси: ${proxies.length}`);
-  } catch (err) {
-    console.error('Ошибка чтения proxies.txt:', err);
-    proxies = [];
-  }
-}
-
+// Vercel / Serverless handler
 module.exports = async (req, res) => {
   try {
-    if (proxies.length === 0) {
-      await loadProxies();
-      if (proxies.length === 0) {
-        res.statusCode = 500;
-        res.setHeader('content-type', 'application/json; charset=utf-8');
-        res.end(JSON.stringify({ error: 'Прокси не загружены или список пуст' }));
-        return;
-      }
-    }
-
+    // Парсим параметры запроса
     const base = `https://${req.headers.host || 'example.com'}`;
     const reqUrl = new URL(req.url, base);
     const page = reqUrl.searchParams.get('page') || '1';
@@ -113,26 +110,28 @@ module.exports = async (req, res) => {
     if (!imageUrl) {
       res.statusCode = 400;
       res.setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(JSON.stringify({ error: 'Отсутствует параметр "url"' }));
+      res.end(JSON.stringify({ error: 'Missing "url" query parameter' }));
       return;
     }
 
+    // Формируем url запроса к TinEye API
     const searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
 
+    // Выполняем запрос через прокси
     const result = await fetchWithProxy(searchUrl);
 
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.end(JSON.stringify(result));
   } catch (err) {
-    console.error('Ошибка в обработчике:', err);
+    console.error('Handler error:', err && err.stack ? err.stack : err);
     res.statusCode = 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: err.message || String(err) }));
+    res.end(JSON.stringify({ error: err && err.message ? err.message : String(err) }));
   }
 };
 
-// Для локального теста (запуск node index.js)
+// Локальный тестовый сервер (запускается при node index.js)
 if (require.main === module) {
   const express = require('express');
   const app = express();
@@ -140,5 +139,5 @@ if (require.main === module) {
   app.get('/tineye', module.exports);
 
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Локальный сервер запущен: http://localhost:${port}/tineye`));
+  app.listen(port, () => console.log(`Local test server listening: http://localhost:${port}/tineye`));
 }
