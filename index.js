@@ -1,4 +1,4 @@
-// index.js — надёжная версия с хедж-запросами и корректной обработкой "Too simple"
+// index.js — надёжная версия с хедж-запросами и обработкой "Too simple"
 
 const fs = require("fs");
 const path = require("path");
@@ -52,14 +52,6 @@ function switchProxy() {
   console.log(`➡️ Переключились на прокси #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
 }
 
-function isTooSimple(json) {
-  return (
-    json &&
-    typeof json.error === "string" &&
-    json.error.toLowerCase().includes("too simple")
-  );
-}
-
 function isValidTinEyeJson(json) {
   if (!json || typeof json !== "object") return false;
   if (typeof json.page === "number" && json.query && typeof json.num_matches === "number") return true;
@@ -78,7 +70,9 @@ async function fetchViaProxy(url, idx, controller) {
     signal: controller.signal,
     headers: {
       "User-Agent": userAgent,
-      Accept: "application/json, text/plain, */*",
+      "Accept": "application/json, text/javascript, */*; q=0.01",
+      "Referer": "https://tineye.com/",
+      "X-Requested-With": "XMLHttpRequest",
     },
   });
 
@@ -91,8 +85,10 @@ async function fetchViaProxy(url, idx, controller) {
     throw new Error(`Invalid JSON via ${proxy}: ${e.message}`);
   }
 
-  if (isValidTinEyeJson(json)) return { idx, json };
-  if (isTooSimple(json)) throw new Error(`Too simple via ${proxy}`); // <--- изменено
+  // даже если "Too simple" — возвращаем JSON
+  if (isValidTinEyeJson(json)) {
+    return { idx, json };
+  }
 
   throw new Error(`Suspicious JSON via ${proxy}`);
 }
