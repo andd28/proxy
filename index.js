@@ -75,11 +75,18 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length, retryOnSamePro
       throw new Error('Пустой ответ от TinEye');
     }
 
+    // обработка фейкового ответа "Too simple"
     if (json.error && String(json.error).toLowerCase().includes('too simple')) {
-      console.warn(`ℹ️ TinEye вернул "Too simple" (это не ошибка).`);
-      // не переключаем прокси, просто возвращаем ответ
-      requestCounter++;
-      return json;
+      console.warn(`🚫 TinEye вернул "Too simple" → фейковый ответ, меняем прокси`);
+      switchToNextProxy();
+      return fetchWithProxy(url, attemptsLeft - 1);
+    }
+
+    // валидация структуры ответа
+    if (!json.results && !json.matches && Object.keys(json).length < 3) {
+      console.warn('🚫 TinEye вернул подозрительный JSON (нет results/matches) → меняем прокси');
+      switchToNextProxy();
+      return fetchWithProxy(url, attemptsLeft - 1);
     }
 
     // успешный ответ
