@@ -1,195 +1,138 @@
-// index.js — надёжная версия с хедж-запросами и корректной обработкой "Too simple"
+// index.js — версия с мгновенным переключением при 429 или обрыве TLS
+const fs = require('fs');
+const path = require('path');
+const fetch = require('node-fetch'); // v2
+const { SocksProxyAgent } = require('socks-proxy-agent');
 
-const fs = require("fs");
-const path = require("path");
-const fetch = require("node-fetch"); // v2
-const { SocksProxyAgent } = require("socks-proxy-agent");
+const proxiesPath = path.join(__dirname, 'proxies.txt');
 
-const proxiesPath = path.join(__dirname, "proxies.txt");
-
-// ===== Конфиг =====
-const requestsPerProxy = 20;
-const perProxyTimeoutMs = parseInt(process.env.PROXY_TIMEOUT_MS || "9000", 10);
-const proxyConcurrency = Math.max(1, parseInt(process.env.PROXY_CONCURRENCY || "3", 10));
-const userAgent =
-  process.env.TINEYE_UA ||
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-
-// ===== Загрузка прокси =====
 let proxies = [];
 try {
-  proxies = fs
-    .readFileSync(proxiesPath, "utf8")
+  proxies = fs.readFileSync(proxiesPath, 'utf8')
     .split(/\r?\n/)
-    .map((s) => s.trim())
+    .map(s => s.trim())
     .filter(Boolean);
-  console.log(`Загружено прокси: ${proxies.length}`);
+  console.log(`Загружено прокси из proxies.txt: ${proxies.length}`);
 } catch (e) {
-  console.error("Ошибка чтения proxies.txt:", e.message);
+  console.error('Ошибка чтения proxies.txt:', e && e.message);
 }
 
-if (proxies.length === 0) console.warn("⚠️ Список прокси пуст.");
+if (proxies.length === 0) {
+  console.warn('Внимание! Список прокси пуст.');
+}
 
-// Текущее состояние
 let currentProxyIndex = 0;
 let requestCounter = 0;
+const requestsPerProxy = 20;
 
-// ===== Утилиты =====
-function normalizeProxy(line) {
-  return /^[a-z]+:\/\//i.test(line) ? line : `socks4://${line}`;
-}
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-function createAgent(proxyLine) {
-  return new SocksProxyAgent(normalizeProxy(proxyLine));
-}
-
-function switchProxy() {
+function switchToNextProxy() {
   if (proxies.length === 0) return;
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
   requestCounter = 0;
-  console.log(`➡️ Переключились на прокси #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
+  console.log(`Сменили прокси на #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
 }
 
-function isTooSimple(json) {
-  return (
-    json &&
-    typeof json.error === "string" &&
-    json.error.toLowerCase().includes("too simple")
-  );
+function createAgent(proxy) {
+  return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
-function isValidTinEyeJson(json) {
-  if (!json || typeof json !== "object") return false;
-  if (typeof json.page === "number" && json.query && typeof json.num_matches === "number") return true;
-  if (Array.isArray(json.matches) || Array.isArray(json.results)) return true;
-  return false;
-}
-
-// ===== Один запрос через прокси =====
-async function fetchViaProxy(url, idx, controller) {
-  const proxy = proxies[idx];
-  const agent = createAgent(proxy);
-
-  const res = await fetch(url, {
-    agent,
-    timeout: perProxyTimeoutMs,
-    signal: controller.signal,
-    headers: {
-      "User-Agent": userAgent,
-      Accept: "application/json, text/plain, */*",
-    },
-  });
-
-  if (!res.ok) throw new Error(`HTTP ${res.status} via ${proxy}`);
-
-  let json;
-  try {
-    json = await res.json();
-  } catch (e) {
-    throw new Error(`Invalid JSON via ${proxy}: ${e.message}`);
+async function fetchWithProxy(url, attemptsLeft = proxies.length) {
+  if (proxies.length === 0) {
+    throw new Error('Список прокси пуст или не загружен!');
   }
-
-  if (isValidTinEyeJson(json)) return { idx, json };
-  if (isTooSimple(json)) return { idx, json };
-
-  throw new Error(`Suspicious JSON via ${proxy}`);
-}
-
-// ===== Хедж-запрос (гонка) =====
-async function hedgedFetch(url) {
-  if (proxies.length === 0) throw new Error("Нет доступных прокси");
+  if (attemptsLeft <= 0) {
+    throw new Error('Все прокси не сработали (исчерпаны попытки).');
+  }
 
   if (requestCounter >= requestsPerProxy) {
-    console.log(`🔄 Лимит ${requestsPerProxy} на прокси, переключаемся`);
-    switchProxy();
+    switchToNextProxy();
   }
 
-  const tried = new Set();
-  let start = currentProxyIndex;
-  const errors = [];
+  const proxy = proxies[currentProxyIndex];
+  console.log(`Используем прокси #${currentProxyIndex}: ${proxy} (${requestCounter + 1}/${requestsPerProxy})`);
 
-  while (tried.size < proxies.length) {
-    const batch = [];
-    for (let i = 0; i < proxyConcurrency && tried.size < proxies.length; i++) {
-      let idx = start;
-      let spin = 0;
-      while (tried.has(idx) && spin < proxies.length) {
-        idx = (idx + 1) % proxies.length;
-        spin++;
-      }
-      if (tried.has(idx)) break;
-      batch.push(idx);
-      tried.add(idx);
-      start = (idx + 1) % proxies.length;
+  const agent = createAgent(proxy);
+
+  try {
+    const res = await fetch(url, { agent, timeout: 8000 });
+
+    if (res.status === 429) {
+      console.warn(`HTTP 429 от прокси ${proxy} — переключаемся мгновенно`);
+      switchToNextProxy();
+      return fetchWithProxy(url, attemptsLeft - 1);
     }
 
-    if (batch.length === 0) break;
-
-    const controllers = batch.map(() => new AbortController());
-    const tasks = batch.map((idx, k) =>
-      fetchViaProxy(url, idx, controllers[k]).catch((err) => {
-        errors.push(err.message);
-        throw err;
-      })
-    );
-
-    try {
-      const { idx, json } = await Promise.any(tasks);
-      controllers.forEach((c, k) => {
-        if (batch[k] !== idx) c.abort();
-      });
-      currentProxyIndex = idx;
-      requestCounter++;
-      return json;
-    } catch {
-      console.warn(`❌ Батч ${batch.join(",")} провалился`);
+    if (!res.ok) {
+      throw new Error(`HTTP статус ${res.status}`);
     }
+
+    const json = await res.json();
+    if (!json || (typeof json === 'object' && Object.keys(json).length === 0)) {
+      throw new Error('Пустой JSON от TinEye');
+    }
+
+    requestCounter++;
+    return json;
+  } catch (err) {
+    const msg = err.message || '';
+    if (
+      msg.includes('Client network socket disconnected before secure') ||
+      msg.includes('ECONNRESET')
+    ) {
+      console.warn(`Ошибка TLS/сокета через ${proxy} — переключаемся мгновенно`);
+      switchToNextProxy();
+      return fetchWithProxy(url, attemptsLeft - 1);
+    }
+
+    console.error(`Прокси ${proxy} не сработал: ${msg}. Попыток осталось: ${attemptsLeft - 1}`);
+    switchToNextProxy();
+    return fetchWithProxy(url, attemptsLeft - 1);
   }
-
-  throw new Error(`Все прокси упали. Ошибки: ${errors.slice(-5).join(" || ")}`);
 }
 
-// ===== Vercel handler =====
+// Vercel handler
 module.exports = async (req, res) => {
   try {
-    const base = `https://${req.headers.host || "example.com"}`;
+    const base = `https://${req.headers.host || 'example.com'}`;
     const reqUrl = new URL(req.url, base);
-    const page = reqUrl.searchParams.get("page") || "1";
-    const imageUrl = reqUrl.searchParams.get("url");
-    const tags = reqUrl.searchParams.get("tags");
+    const page = reqUrl.searchParams.get('page') || '1';
+    const imageUrl = reqUrl.searchParams.get('url');
+    const tags = reqUrl.searchParams.get('tags');
 
     if (!imageUrl) {
       res.statusCode = 400;
-      return res.end(JSON.stringify({ error: 'Missing "url" query parameter' }));
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: 'Missing "url" query parameter' }));
+      return;
     }
 
-    let searchUrl = `https://tineye.com/api/v1/result_json/?page=${encodeURIComponent(page)}&url=${encodeURIComponent(
-      imageUrl
-    )}`;
-    if (tags) searchUrl += `&tags=${encodeURIComponent(tags)}`;
+    let searchUrl = `https://tineye.com/api/v1/result_json/?page=${page}&url=${encodeURIComponent(imageUrl)}`;
+    if (tags) {
+      searchUrl += `&tags=${encodeURIComponent(tags)}`;
+    }
 
-    console.log("🔍 TinEye URL:", searchUrl);
+    console.log('TinEye URL:', searchUrl);
 
-    const json = await hedgedFetch(searchUrl);
+    const tineyeJson = await fetchWithProxy(searchUrl);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(json));
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify(tineyeJson));
   } catch (err) {
-    console.error("Handler error:", err.message);
-    res.statusCode = 502;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ error: err.message }));
+    console.error('Handler error:', err);
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ error: err.message || String(err) }));
   }
 };
 
-// ===== Локальный тест =====
+// Локальный тест
 if (require.main === module) {
-  const express = require("express");
+  const express = require('express');
   const app = express();
-  app.get("/tineye", module.exports);
+  app.get('/tineye', module.exports);
   const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`🚀 Local test: http://localhost:${port}/tineye`));
+  app.listen(port, () => console.log(`Local test server: http://localhost:${port}/tineye`));
 }
