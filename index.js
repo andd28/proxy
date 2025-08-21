@@ -8,7 +8,7 @@ const { SocksProxyAgent } = require("socks-proxy-agent");
 const proxiesPath = path.join(__dirname, "proxies.txt");
 
 // ===== Конфиг =====
-const requestsPerProxy = 20; // сколько успешных ответов держим «сессию» на одном прокси
+const requestsPerProxy = 20;
 const perProxyTimeoutMs = parseInt(process.env.PROXY_TIMEOUT_MS || "9000", 10);
 const proxyConcurrency = Math.max(1, parseInt(process.env.PROXY_CONCURRENCY || "3", 10));
 const userAgent =
@@ -56,16 +56,14 @@ function isTooSimple(json) {
   return (
     json &&
     typeof json.error === "string" &&
-    json.error.toLowerCase().includes("too simple") &&
-    typeof json.suggestions === "object"
+    json.error.toLowerCase().includes("too simple")
   );
 }
 
 function isValidTinEyeJson(json) {
   if (!json || typeof json !== "object") return false;
-  if (Array.isArray(json.results)) return true;
-  if (Array.isArray(json.matches)) return true;
-  if (typeof json.total === "number") return true;
+  if (typeof json.page === "number" && json.query && typeof json.num_matches === "number") return true;
+  if (Array.isArray(json.matches) || Array.isArray(json.results)) return true;
   return false;
 }
 
@@ -93,9 +91,8 @@ async function fetchViaProxy(url, idx, controller) {
     throw new Error(`Invalid JSON via ${proxy}: ${e.message}`);
   }
 
-  // ✅ TinEye "Too Simple" тоже валидный ответ
-  if (isTooSimple(json)) return { idx, json };
   if (isValidTinEyeJson(json)) return { idx, json };
+  if (isTooSimple(json)) return { idx, json };
 
   throw new Error(`Suspicious JSON via ${proxy}`);
 }
