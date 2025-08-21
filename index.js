@@ -1,4 +1,5 @@
-// index.js — версия с мгновенным переключением при 429 или обрыве TLS
+// index.js — улучшенная версия с сессией на 20 URL, обработкой "Too simple" и повторами
+
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch'); // v2
@@ -31,14 +32,14 @@ function switchToNextProxy() {
   if (proxies.length === 0) return;
   currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
   requestCounter = 0;
-  console.log(`Сменили прокси на #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
+  console.log(`🔄 Переключились на прокси #${currentProxyIndex}: ${proxies[currentProxyIndex]}`);
 }
 
 function createAgent(proxy) {
   return new SocksProxyAgent(`socks4://${proxy}`);
 }
 
-async function fetchWithProxy(url, attemptsLeft = proxies.length) {
+async function fetchWithProxy(url, attemptsLeft = proxies.length, retryOnSameProxy = 1) {
   if (proxies.length === 0) {
     throw new Error('Список прокси пуст или не загружен!');
   }
@@ -47,11 +48,12 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
   }
 
   if (requestCounter >= requestsPerProxy) {
+    console.log(`⚠️ Достигнут лимит ${requestsPerProxy} запросов → меняем прокси`);
     switchToNextProxy();
   }
 
   const proxy = proxies[currentProxyIndex];
-  console.log(`Используем прокси #${currentProxyIndex}: ${proxy} (${requestCounter + 1}/${requestsPerProxy})`);
+  console.log(`➡️ Используем прокси #${currentProxyIndex}: ${proxy} (${requestCounter + 1}/${requestsPerProxy})`);
 
   const agent = createAgent(proxy);
 
@@ -59,7 +61,7 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
     const res = await fetch(url, { agent, timeout: 8000 });
 
     if (res.status === 429) {
-      console.warn(`HTTP 429 от прокси ${proxy} — переключаемся мгновенно`);
+      console.warn(`🚫 HTTP 429 от прокси ${proxy} — переключаемся мгновенно`);
       switchToNextProxy();
       return fetchWithProxy(url, attemptsLeft - 1);
     }
@@ -69,24 +71,41 @@ async function fetchWithProxy(url, attemptsLeft = proxies.length) {
     }
 
     const json = await res.json();
-    if (!json || (typeof json === 'object' && Object.keys(json).length === 0)) {
-      throw new Error('Пустой JSON от TinEye');
+    if (!json) {
+      throw new Error('Пустой ответ от TinEye');
     }
 
+    if (json.error && String(json.error).toLowerCase().includes('too simple')) {
+      console.warn(`ℹ️ TinEye вернул "Too simple" (это не ошибка).`);
+      // не переключаем прокси, просто возвращаем ответ
+      requestCounter++;
+      return json;
+    }
+
+    // успешный ответ
     requestCounter++;
     return json;
+
   } catch (err) {
     const msg = err.message || '';
+    console.warn(`❌ Ошибка при работе через ${proxy}: ${msg}`);
+
     if (
       msg.includes('Client network socket disconnected before secure') ||
-      msg.includes('ECONNRESET')
+      msg.includes('ECONNRESET') ||
+      msg.includes('ETIMEDOUT') ||
+      msg.includes('Proxy connection timed out')
     ) {
-      console.warn(`Ошибка TLS/сокета через ${proxy} — переключаемся мгновенно`);
+      if (retryOnSameProxy > 0) {
+        console.warn(`↩️ Повторная попытка на том же прокси (${proxy}), осталось повторов: ${retryOnSameProxy}`);
+        return fetchWithProxy(url, attemptsLeft, retryOnSameProxy - 1);
+      }
+      console.warn(`⚡ Сетевая ошибка, переключаем прокси`);
       switchToNextProxy();
       return fetchWithProxy(url, attemptsLeft - 1);
     }
 
-    console.error(`Прокси ${proxy} не сработал: ${msg}. Попыток осталось: ${attemptsLeft - 1}`);
+    console.error(`⚠️ Неизвестная ошибка, переключаем прокси. Осталось попыток: ${attemptsLeft - 1}`);
     switchToNextProxy();
     return fetchWithProxy(url, attemptsLeft - 1);
   }
@@ -113,7 +132,7 @@ module.exports = async (req, res) => {
       searchUrl += `&tags=${encodeURIComponent(tags)}`;
     }
 
-    console.log('TinEye URL:', searchUrl);
+    console.log('🔍 TinEye URL:', searchUrl);
 
     const tineyeJson = await fetchWithProxy(searchUrl);
 
