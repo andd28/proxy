@@ -92,7 +92,7 @@ async function fetchViaProxy(url, idx, controller) {
   }
 
   if (isValidTinEyeJson(json)) return { idx, json };
-  if (isTooSimple(json)) throw new Error(`Too simple via ${proxy}`); // <--- изменено
+  if (isTooSimple(json)) return { idx, json };
 
   throw new Error(`Suspicious JSON via ${proxy}`);
 }
