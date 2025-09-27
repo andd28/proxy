@@ -12,7 +12,7 @@
     "socks-proxy-agent": "^8.0.3"
   },
   "engines": {
-    "node": "18.x"
+    "node": "22.x"
   },
   "license": "MIT"
 }
